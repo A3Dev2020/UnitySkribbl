@@ -1,6 +1,10 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
+using Assets.Scripts;
+using Newtonsoft.Json;
 using UnityEngine;
+using WebSocketSharp;
 
 public class MyDraw : MonoBehaviour
 {
@@ -12,61 +16,111 @@ public class MyDraw : MonoBehaviour
     private bool Started;
     private Vector3 LastPosition;
 
+    WebSocket ws;
+    public Queue<string> Queue = new Queue<string>();
+
     // Start is called before the first frame update
     void Start()
     {
+        ws = new WebSocket("ws://localhost:8080");
+        ws.Connect();
+        ws.OnMessage += (sender, e) =>
+        { 
+            Queue.Enqueue(e.Data);
+        };
     }
 
     // Update is called once per frame
     void Update()
     {
+        Vector3 v = Camera.main.ScreenToWorldPoint(Input.mousePosition);
+
         if (Input.GetMouseButtonDown(0))
         {
             Hold = true;
+            ws.SendJson(new StartEndInput
+            {
+                Start = true,
+                X = v.x,
+                Y = v.y
+            });
         }
 
         if (Input.GetMouseButtonUp(0))
         {
             Hold = false;
             Started = false;
+            ws.SendJson(new StartEndInput
+            {
+                Start = false
+            });
         }
 
         if (Hold && Threshold <= _threshold)
         {
-            int count = 0;
-            Vector3 v = Camera.main.ScreenToWorldPoint(Input.mousePosition);
-            int interpolationSteps = 1;
-
-            if (Started)
+            ws.SendJson(new TraitInput
             {
-                float x = Mathf.Abs(LastPosition.x - v.x);
-                float y = Mathf.Abs(LastPosition.y - v.y);
+                X = v.x,
+                Y = v.y
+            });
+        }
+
+        TreatQueue();
+
+        _threshold += Time.deltaTime;
+    }
+
+    private void TreatQueue()
+    {
+        if (Queue.Any())
+        {
+            string e = Queue.Dequeue();
+
+            if (e.Contains("Start"))
+            {
+                StartEndInput i = JsonConvert.DeserializeObject<StartEndInput>(e);
+
+                if (i.Start)
+                {
+                    LastPosition = new Vector3(i.X, i.Y);
+                    Started = true;
+                }
+                else
+                {
+                    Started = false;
+                }
+            }
+            else if (Started)
+            {
+                TraitInput i = JsonConvert.DeserializeObject<TraitInput>(e);
+                int count = 0;
+
+                int interpolationSteps = 1;
+
+                float x = Mathf.Abs(LastPosition.x - i.X);
+                float y = Mathf.Abs(LastPosition.y - i.Y);
 
                 interpolationSteps = (int)((x + y) * InterpolMult);
 
-                Debug.Log(interpolationSteps);
-            }
+                while (count < interpolationSteps)
+                {
+                    Vector3 v = i.GetVector();
+                    float step = (count / (float)interpolationSteps);
+                    Vector3 pos = Vector3.Lerp(LastPosition, v, step);
 
+                    pos[2] = -0.1f;
+                    InstantiateTrait(pos);
+                    _threshold = 0;
 
-            while (Started && count < interpolationSteps)
-            {
-                float step = (count / (float)interpolationSteps);
-                Vector3 pos = Vector3.Lerp(LastPosition, v, step);
+                    ++count;
+                }
 
-                pos[2] = -0.1f;
-                InstantiateTrait(pos);
+                Started = true;
+
                 _threshold = 0;
-
-                ++count;
+                LastPosition = i.GetVector();
             }
-
-            Started = true;
-
-            _threshold = 0;
-            LastPosition = v;
         }
-
-        _threshold += Time.deltaTime;
     }
 
     private void InstantiateTrait(Vector3 position)
